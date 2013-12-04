@@ -43,7 +43,7 @@ int main()
     printf("timer number: %zu\n", ue_timer_num(ut));
     printf("sequence: %u\n", sequence);
 
-    ue_timer_del(sequence);
+//    ue_timer_del(sequence);
 
     ue_run(NULL);
 

@@ -44,6 +44,8 @@ struct ue_info
 
 struct ue_info *ue_info_list_head;
 
+static int is_exit_later_set;
+
 static int ue_loga(int severity, char const *fmt, ...)
 {
     if (ue_log == NULL)
@@ -173,7 +175,6 @@ static struct ue_info *ue_find_by_name(int name)
     return NULL;
 }
 
-# ifdef DEBUG
 int ue_trace(void)
 {
     int n = 0;
@@ -192,7 +193,6 @@ int ue_trace(void)
 
     return 0;
 }
-# endif
 
 static int ue_list_add_tail(struct ue_info *ui)
 {
@@ -281,7 +281,11 @@ int ue_set_log_callback(ue_handle_log_cb *cb)
 
 int ue_run(ue_handle_loop_cb *loop)
 {
-    if (ue_base == NULL && ue_init_base() < 0)
+    if (ue_base == NULL)
+        return -__LINE__;
+
+    /* It's not safe to run event base after fork. */
+    if (event_reinit(ue_base) < 0)
         return -__LINE__;
 
     ue_loop = loop;
@@ -313,6 +317,31 @@ int ue_exit(void)
     return event_base_loopexit(ue_base, NULL);
 }
 
+static void ue_handle_exit_later(evutil_socket_t fd, short what, void *arg)
+{
+    is_exit_later_set = 0;
+    ue_exit();
+}
+
+int ue_exit_later(struct timeval *tv)
+{
+    if (tv == NULL)
+        return -__LINE__;
+    if (is_exit_later_set == 1)
+        return 0;
+
+    struct event *ev = event_new(ue_base, -1, EV_TIMEOUT, ue_handle_exit_later, NULL);
+    if (ev == NULL)
+        return -__LINE__;
+
+    if (event_add(ev, tv) < 0)
+        return -__LINE__;
+
+    is_exit_later_set = 1;
+
+    return 0;
+}
+
 struct ue_context *ue_create_context(char const *ip, int port)
 {
     if (port < 0)
@@ -330,6 +359,17 @@ struct ue_context *ue_create_context(char const *ip, int port)
     uc->create_time = time(NULL);
 
     return uc;
+}
+
+int ue_close_context(struct ue_context *uc)
+{
+    if (uc == NULL)
+        return -__LINE__;
+
+    close(uc->sockfd);
+    free(uc);
+
+    return 0;
 }
 
 int ue_send_by_context(struct ue_context *uc, struct sockaddr_in *addr, void *pkg, size_t pkg_len)
@@ -636,15 +676,15 @@ struct ue_timer *ue_timer_create(struct timeval *timeout, \
         return NULL;
     }
 
-    const struct timeval *ev_out = event_base_init_common_timeout(ue_base, timeout);
-    if (ev_out == NULL)
+    const struct timeval *event_timeout = event_base_init_common_timeout(ue_base, timeout);
+    if (event_timeout == NULL)
     {
         session_cache_destory(context->cache);
         free(context);
         return NULL;
     }
 
-    memcpy(&context->event_timeout, ev_out, sizeof(*ev_out));
+    memcpy(&context->event_timeout, event_timeout, sizeof(*event_timeout));
     memcpy(&context->ut.timeout, timeout, sizeof(*timeout));
 
     context->ut.session_size  = session_size;
